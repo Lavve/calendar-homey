@@ -1,8 +1,5 @@
 // a method named 'onHomeyReady' must be present in your code
 function onHomeyReady (Homey) {
-  // Tell Homey we're ready to be displayed
-  Homey.ready()
-
   // setting ids
   const settingsUris = variableMgmt.setting.icalUris
   const settingsDateFormat = variableMgmt.setting.dateFormat
@@ -104,7 +101,11 @@ function onHomeyReady (Homey) {
   // if uri_failed exists as a setting, show error div
   getUriFailedSetting(settingsUris)
 
+  // every 3 seconds, see if there's an error
   setInterval(() => getUriFailedSetting(settingsUris), 3000)
+
+  // Tell Homey we're ready to be displayed
+  Homey.ready()
 }
 
 function newCalendarItem (name = null, uri = null) {

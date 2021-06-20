@@ -3,25 +3,27 @@
 const { sentry, init } = require('./lib/sentry-io') // { sentry, init, startTransaction }
 
 const Homey = require('homey')
+const IntervalClock = require('interval-clock')
 
 const getDateTimeFormat = require('./lib/get-datetime-format')
 const getContent = require('./lib/get-ical-content')
 const getActiveEvents = require('./lib/get-active-events')
 const sortCalendarsEvents = require('./lib/sort-calendars')
+const { generateTokens, generatePerCalendarTokens } = require('./lib/generate-token-configuration')
 
 const triggersHandler = require('./handlers/triggers')
 const conditionsHandler = require('./handlers/conditions')
 const actionsHandler = require('./handlers/actions')
 
 class IcalCalendar extends Homey.App {
-  onInit () {
-    this.log(`${Homey.manifest.name.en} v${Homey.manifest.version} is running...`)
+  async onInit () {
+    this.log(`${Homey.manifest.name.en} v${Homey.manifest.version} is running on ${this.homey.version}...`)
 
     // set a variable to control if getEvents is already running
     this.isGettingEvents = false
 
     // initialize sentry.io
-    init(Homey)
+    init(this.homey)
     this.sentry = sentry
 
     // register variableMgmt to this app class
@@ -44,7 +46,7 @@ class IcalCalendar extends Homey.App {
     this.getEvents(true)
 
     // register callback when settings has been set
-    Homey.ManagerSettings.on('set', args => {
+    this.homey.settings.on('set', args => {
       if (args && (args === this.variableMgmt.setting.icalUris || args === this.variableMgmt.setting.eventLimit || args === this.variableMgmt.setting.nextEventTokensPerCalendar)) {
         // sync calendars when calendar specific settings have been changed
         if (!this.isGettingEvents) {
@@ -57,20 +59,17 @@ class IcalCalendar extends Homey.App {
       }
     })
 
-    // remove cron tasks on unload
-    Homey.on('unload', () => this.unregisterCronTasks())
-
     // register cron tasks for updateCalendar and triggerEvents
-    this.registerCronTasks()
+    this.registerIntervals()
   }
 
   async getEvents (reregisterCalendarTokens = false) {
     this.isGettingEvents = true
 
     // get URI from settings
-    const calendars = Homey.ManagerSettings.get(this.variableMgmt.setting.icalUris)
+    const calendars = this.homey.settings.get(this.variableMgmt.setting.icalUris)
     // get event limit from settings or use the default
-    const eventLimit = Homey.ManagerSettings.get(this.variableMgmt.setting.eventLimit) || this.variableMgmt.setting.eventLimitDefault
+    const eventLimit = this.homey.settings.get(this.variableMgmt.setting.eventLimit) || this.variableMgmt.setting.eventLimitDefault
     const calendarsEvents = []
 
     // get ical events
@@ -82,17 +81,19 @@ class IcalCalendar extends Homey.App {
         if (uri === '') {
           this.log(`getEvents: Calendar '${name}' has empty uri. Skipping...`)
           continue
-        } else if (!uri.includes('http://') && !uri.includes('https://') && !uri.includes('webcal://')) {
+        } else if (!/(http|https|webcal):\/\/.+/.exec(uri)) {
           this.log(`getEvents: Uri for calendar '${name}' is invalid. Skipping...`)
           calendars[i] = { name, uri, failed: `Uri for calendar '${name}' is invalid` }
-          Homey.ManagerSettings.set(this.variableMgmt.setting.icalUris, calendars)
-          this.log(`getEvents: 'failed' setting value added to calendar '${name}'`)
+          this.homey.settings.set(this.variableMgmt.setting.icalUris, calendars)
+          this.log(`getEvents: Added 'failed' setting value to calendar '${name}'`)
           continue
         }
 
-        if (uri.indexOf('webcal://') === 0) {
+        if (/webcal:\/\/.+/.exec(uri)) {
           uri = uri.replace('webcal://', 'https://')
           this.log(`getEvents: Calendar '${name}': webcal found and replaced with https://`)
+          calendars[i] = { name, uri }
+          this.homey.settings.set(this.variableMgmt.setting.icalUris, calendars)
         }
 
         this.log(`getEvents: Getting events (${eventLimit.value} ${eventLimit.type} ahead) for calendar`, name, uri)
@@ -102,8 +103,8 @@ class IcalCalendar extends Homey.App {
             // remove failed setting if it exists for calendar
             if (calendars[i].failed) {
               calendars[i] = { name, uri }
-              Homey.ManagerSettings.set(this.variableMgmt.setting.icalUris, calendars)
-              this.log(`getEvents: 'failed' setting value removed from calendar '${name}'`)
+              this.homey.settings.set(this.variableMgmt.setting.icalUris, calendars)
+              this.log(`getEvents: Removed 'failed' setting value from calendar '${name}'`)
             }
 
             const activeEvents = getActiveEvents(data, eventLimit)
@@ -115,13 +116,10 @@ class IcalCalendar extends Homey.App {
 
             this.log('getEvents: Failed to get events for calendar', name, uri, errorString)
 
-            // send exception to sentry (don't think this actually is useful)
-            // sentry.captureException(err);
-
             // set a failed setting value to show a error message on settings page
             calendars[i] = { name, uri, failed: errorString }
-            Homey.ManagerSettings.set(this.variableMgmt.setting.icalUris, calendars)
-            this.log(`getEvents: 'failed' setting value added to calendar '${name}'`)
+            this.homey.settings.set(this.variableMgmt.setting.icalUris, calendars)
+            this.log(`getEvents: Added 'failed' setting value to calendar '${name}'`)
           })
       }
     } else {
@@ -144,55 +142,23 @@ class IcalCalendar extends Homey.App {
       }
 
       // get setting for adding nextEventTokensPerCalendar
-      const nextEventTokensPerCalendar = Homey.ManagerSettings.get(this.variableMgmt.setting.nextEventTokensPerCalendar)
+      const nextEventTokensPerCalendar = this.homey.settings.get(this.variableMgmt.setting.nextEventTokensPerCalendar)
 
       // register calendar tokens
       if (this.variableMgmt.calendars.length > 0) {
         await Promise.all(this.variableMgmt.calendars.map(async calendar => {
-          // todays events pr calendar
-          new Homey.FlowToken(`${this.variableMgmt.calendarTokensPreId}${calendar.name}${this.variableMgmt.calendarTokensPostTodayId}`, { type: 'string', title: `${Homey.__('calendarTokens.events_today_calendar_title_stamps')} ${calendar.name}` }).register()
-            .then(token => {
-              this.variableMgmt.calendarTokens.push(token)
-              this.log(`getEvents: Registered calendarToken '${token.id}'`)
-            })
-          // tomorrows events pr calendar
-          new Homey.FlowToken(`${this.variableMgmt.calendarTokensPreId}${calendar.name}${this.variableMgmt.calendarTokensPostTomorrowId}`, { type: 'string', title: `${Homey.__('calendarTokens.events_tomorrow_calendar_title_stamps')} ${calendar.name}` }).register()
-            .then(token => {
-              this.variableMgmt.calendarTokens.push(token)
-              this.log(`getEvents: Registered calendarToken '${token.id}'`)
-            })
+          // register todays and tomorrows events pr calendar
+          generateTokens(this.variableMgmt, calendar.name).forEach(({ id, type, title }) => {
+            this.variableMgmt.calendarTokens.push(await this.homey.flow.createToken(id, { type, title }))
+            this.log(`getEvents: Created calendar token '${id}'`)
+          })
 
+          // register next event title, next event start, next event start time, next event end date and next event end time pr calendar
           if (nextEventTokensPerCalendar) {
-            // next event title pr calendar
-            new Homey.FlowToken(`${this.variableMgmt.calendarTokensPreId}${calendar.name}${this.variableMgmt.calendarTokensPostNextTitleId}`, { type: 'string', title: `${Homey.__('calendarTokens.event_next_title_calendar')} ${calendar.name}` }).register()
-              .then(token => {
-                this.variableMgmt.calendarTokens.push(token)
-                this.log(`getEvents: Registered calendarToken '${token.id}'`)
-              })
-            // next event start date pr calendar
-            new Homey.FlowToken(`${this.variableMgmt.calendarTokensPreId}${calendar.name}${this.variableMgmt.calendarTokensPostNextStartDateId}`, { type: 'string', title: `${Homey.__('calendarTokens.event_next_startdate_calendar')} ${calendar.name}` }).register()
-              .then(token => {
-                this.variableMgmt.calendarTokens.push(token)
-                this.log(`getEvents: Registered calendarToken '${token.id}'`)
-              })
-            // next event start time pr calendar
-            new Homey.FlowToken(`${this.variableMgmt.calendarTokensPreId}${calendar.name}${this.variableMgmt.calendarTokensPostNextStartTimeId}`, { type: 'string', title: `${Homey.__('calendarTokens.event_next_startstamp_calendar')} ${calendar.name}` }).register()
-              .then(token => {
-                this.variableMgmt.calendarTokens.push(token)
-                this.log(`getEvents: Registered calendarToken '${token.id}'`)
-              })
-            // next event end date pr calendar
-            new Homey.FlowToken(`${this.variableMgmt.calendarTokensPreId}${calendar.name}${this.variableMgmt.calendarTokensPostNextEndDateId}`, { type: 'string', title: `${Homey.__('calendarTokens.event_next_enddate_calendar')} ${calendar.name}` }).register()
-              .then(token => {
-                this.variableMgmt.calendarTokens.push(token)
-                this.log(`getEvents: Registered calendarToken '${token.id}'`)
-              })
-            // next event end time pr calendar
-            new Homey.FlowToken(`${this.variableMgmt.calendarTokensPreId}${calendar.name}${this.variableMgmt.calendarTokensPostNextEndTimeId}`, { type: 'string', title: `${Homey.__('calendarTokens.event_next_endstamp_calendar')} ${calendar.name}` }).register()
-              .then(token => {
-                this.variableMgmt.calendarTokens.push(token)
-                this.log(`getEvents: Registered calendarToken '${token.id}'`)
-              })
+            generatePerCalendarTokens(this.variableMgmt, calendar.name).forEach(({ id, type, title }) => {
+              this.variableMgmt.calendarTokens.push(await this.homey.flow.createToken(id, { type, title }))
+              this.log(`getEvents: Created calendar token '${id}'`)
+            })
           }
         }))
       }
@@ -225,38 +191,28 @@ class IcalCalendar extends Homey.App {
     }
   }
 
-  async unregisterCronTasks () {
-    await Homey.ManagerCron.unregisterAllTasks()
-  }
+  async registerIntervals () {
+    this.intervals = {}
 
-  async registerCronTasks () {
-    await this.unregisterCronTasks()
+    // update calendars
+    this.intervals.updateCalendars = IntervalClock('1m')
+    this.intervals.updateCalendars.on('tick', () => {
+      if (!this.isGettingEvents) {
+        this.log('registerIntervals/updateCalendars: Updating calendars without reregistering of tokens')
+        this.getEvents()
+      }
+    })
+    this.log(`registerIntervals: Calendars update setup for every 15th minute`)
 
-    try {
-      const cronTaskUpdateCalendar = await Homey.ManagerCron.registerTask(this.variableMgmt.crontask.id.updateCalendar, this.variableMgmt.crontask.schedule.updateCalendar)
-      cronTaskUpdateCalendar.on('run', () => {
-        if (!this.isGettingEvents) {
-          this.log('onInit/cronTask: Triggering getEvents without reregistering of tokens')
-          this.getEvents()
-        }
-      })
-      // this.log(`registerCronTask: Registered task '${this.variableMgmt.crontask.id.updateCalendar}' with cron format '${this.variableMgmt.crontask.schedule.updateCalendar}'`);
-    } catch (error) {
-      this.log(`registerCronTasks: Failed to register task '${this.variableMgmt.crontask.id.updateCalendar}'`, error)
-
-      sentry.captureException(error)
-    }
-
-    try {
-      // const cronTaskTriggerEvents = await Homey.ManagerCron.registerTask(variableMgmt.crontask.id.triggerEvents, variableMgmt.crontask.schedule.triggerEvents);
-      const cronTaskTriggerEvents = await Homey.ManagerCron.registerTask(this.variableMgmt.crontask.id.triggerEvents, this.variableMgmt.crontask.schedule.triggerEvents)
-      cronTaskTriggerEvents.on('run', () => this.triggerEvents())
-      // this.log(`registerCronTask: Registered task '${this.variableMgmt.crontask.id.triggerEvents}' with cron format '${this.variableMgmt.crontask.schedule.triggerEvents}'`);
-    } catch (error) {
-      this.log(`registerCronTasks: Failed to register task '${this.variableMgmt.crontask.id.triggerEvents}'`, error)
-
-      sentry.captureException(error)
-    }
+    // event triggers
+    this.intervals.triggers = IntervalClock('1m')
+    this.intervals.triggers.on('tick', () => {
+      if (!this.isGettingEvents) {
+        this.log('registerIntervals/triggers: Triggering events')
+        this.triggerEvents()
+      }
+    })
+    this.log(`registerIntervals: Triggering events setup for every 1 minute`)
   }
 }
 
