@@ -135,7 +135,7 @@ class IcalCalendar extends Homey.App {
         this.log('getEvents: Calendar tokens starting to flush')
         await Promise.all(this.variableMgmt.calendarTokens.map(async token => {
           this.log(`getEvents: Calendar token '${token.id}' starting to flush`)
-          return token.unregister()
+          return token.unregisterToken()
         }))
         this.variableMgmt.calendarTokens = []
         this.log('getEvents: Calendar tokens flushed')
