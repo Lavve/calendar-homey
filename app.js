@@ -198,7 +198,7 @@ class IcalCalendar extends Homey.App {
     this.intervals.updateCalendars = IntervalClock('1m')
     this.intervals.updateCalendars.on('tick', () => {
       if (!this.isGettingEvents) {
-        this.log('registerIntervals/updateCalendars: Updating calendars without reregistering of tokens')
+        this.log('registerIntervals/updateCalendars: Updating calendars without reregistering tokens')
         this.getEvents()
       }
     })
