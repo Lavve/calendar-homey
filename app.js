@@ -148,14 +148,14 @@ class IcalCalendar extends Homey.App {
       if (this.variableMgmt.calendars.length > 0) {
         await Promise.all(this.variableMgmt.calendars.map(async calendar => {
           // register todays and tomorrows events pr calendar
-          generateTokens(this.variableMgmt, calendar.name).forEach(({ id, type, title }) => {
+          generateTokens(this.variableMgmt, calendar.name).map(async ({ id, type, title }) => {
             this.variableMgmt.calendarTokens.push(await this.homey.flow.createToken(id, { type, title }))
             this.log(`getEvents: Created calendar token '${id}'`)
           })
 
           // register next event title, next event start, next event start time, next event end date and next event end time pr calendar
           if (nextEventTokensPerCalendar) {
-            generatePerCalendarTokens(this.variableMgmt, calendar.name).forEach(({ id, type, title }) => {
+            generatePerCalendarTokens(this.variableMgmt, calendar.name).map(async ({ id, type, title }) => {
               this.variableMgmt.calendarTokens.push(await this.homey.flow.createToken(id, { type, title }))
               this.log(`getEvents: Created calendar token '${id}'`)
             })
