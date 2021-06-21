@@ -88,9 +88,21 @@ const startTrigger = (calendarName, event, app, state) => {
 
   if (state === undefined) {
     app.log(`Triggered '${event.TRIGGER_ID}'`)
-    Homey.ManagerFlow.getCard('trigger', event.TRIGGER_ID).trigger(tokens)
+    app.homey.flow.getTriggerCard(event.TRIGGER_ID).trigger(tokens)
+      .catch(error => {
+        app.log(`startTrigger: '${event.TRIGGER_ID}' failed to trigger:`, error)
+
+        // send exception to sentry
+        app.sentry.captureException(error)
+      })
   } else {
-    Homey.ManagerFlow.getCard('trigger', event.TRIGGER_ID).trigger(tokens, state)
+    app.homey.flow.getTriggerCard(event.TRIGGER_ID).trigger(tokens, state)
+      .catch(error => {
+        app.log(`startTrigger: '${event.TRIGGER_ID}' failed to trigger:`, error)
+
+        // send exception to sentry
+        app.sentry.captureException(error)
+      })
   }
 }
 
@@ -231,80 +243,66 @@ const updateFlowTokens = app => {
 
 module.exports = async app => {
   // register trigger flow cards
-  const registerTriggerFlowCards = async () => {
-    new Homey.FlowCardTrigger('event_starts').register()
+  // TODO: Don't think these should be here anymore. SDK3 register all cards internally
+  /* new Homey.FlowCardTrigger('event_starts').register()
+  new Homey.FlowCardTrigger('event_stops').register() */
+  
+  app.homey.flow.getTriggerCard('event_starts_in').registerRunListener((args, state) => {
+    const minutes = convertToMinutes(args.when, args.type)
+    const result = (minutes === state.when)
+    if (result) {
+      app.log('Triggered \'event_starts_in\' with state:', state)
+    }
 
-    new Homey.FlowCardTrigger('event_stops').register()
+    return Promise.resolve(result)
+  })
 
-    new Homey.FlowCardTrigger('event_starts_in')
-      .registerRunListener((args, state) => {
-        const minutes = convertToMinutes(args.when, args.type)
-        const result = (minutes === state.when)
-        if (result) {
-          app.log('Triggered \'event_starts_in\' with state:', state)
-        }
+  app.homey.flow.getTriggerCard('event_stops_in').registerRunListener((args, state) => {
+    const minutes = convertToMinutes(args.when, args.type)
+    const result = (minutes === state.when)
+    if (result) {
+      app.log('Triggered \'event_stops_in\' with state:', state)
+    }
 
-        return Promise.resolve(result)
+    return Promise.resolve(result)
+  })
+
+  const eventStartsCalendar = app.homey.flow.getTriggerCard('event_starts_calendar')
+  eventStartsCalendar.registerRunListener((args, state) => {
+    const result = (args.calendar.name === state.calendarName)
+    if (result) {
+      app.log('Triggered \'event_starts_calendar\' with state:', state)
+    }
+
+    return Promise.resolve(result)
+  })
+  eventStartsCalendar.registerArgumentAutocompleteListener('calendar', (query, args) => {
+    if (!app.variableMgmt.calendars) {
+      app.log('event_starts_calendar.onAutocompleteListener: Calendars not set yet. Nothing to show...')
+      return Promise.resolve(false)
+    }
+
+    if (query && query !== '') {
+      const filteredCalendar = filterByCalendar(app.variableMgmt.calendars, query) || []
+      return Promise.resolve(
+        filteredCalendar.map(calendar => {
+          return { id: calendar.name, name: calendar.name }
+        })
+      )
+    }
+
+    return Promise.resolve(
+      app.variableMgmt.calendars.map(calendar => {
+        return { id: calendar.name, name: calendar.name }
       })
-      .register()
-
-    new Homey.FlowCardTrigger('event_stops_in')
-      .registerRunListener((args, state) => {
-        const minutes = convertToMinutes(args.when, args.type)
-        const result = (minutes === state.when)
-        if (result) {
-          app.log('Triggered \'event_stops_in\' with state:', state)
-        }
-
-        return Promise.resolve(result)
-      })
-      .register()
-
-    new Homey.FlowCardTrigger('event_starts_calendar')
-      .register()
-      .registerRunListener((args, state) => {
-        const result = (args.calendar.name === state.calendarName)
-        if (result) {
-          app.log('Triggered \'event_starts_calendar\' with state:', state)
-        }
-
-        return Promise.resolve(result)
-      })
-      .getArgument('calendar')
-      .registerAutocompleteListener((query, args) => {
-        if (!app.variableMgmt.calendars) {
-          app.log('event_starts_calendar.onAutocompleteListener: Calendars not set yet. Nothing to show...')
-          return Promise.resolve(false)
-        }
-
-        if (query && query !== '') {
-          const filteredCalendar = filterByCalendar(app.variableMgmt.calendars, query) || []
-          return Promise.resolve(
-            filteredCalendar.map(calendar => {
-              return { id: calendar.name, name: calendar.name }
-            })
-          )
-        }
-
-        return Promise.resolve(
-          app.variableMgmt.calendars.map(calendar => {
-            return { id: calendar.name, name: calendar.name }
-          })
-        )
-      })
-  }
+    )
+  })
 
   // register flow tokens
-  const registerFlowTokens = async () => {
-    app.variableMgmt.tokens.forEach(definition => {
-      new Homey.FlowToken(definition.id, { type: definition.type, title: Homey.__(`flowTokens.${definition.id}`) })
-        .register()
-        .then(token => app.variableMgmt.flowTokens.push(token))
-    })
-  }
-
-  await registerTriggerFlowCards()
-  await registerFlowTokens()
+  await Promise.all(app.variableMgmt.tokens.map(async ({ id, type }) => {
+    app.variableMgmt.flowTokens.push(await app.homey.flow.createToken(id, { type, title: Homey.__(`flowTokens.${id}`) }))
+    app.log('triggers: flowToken', id, 'created')
+  }))
 }
 
 module.exports.triggerEvents = async app => {
