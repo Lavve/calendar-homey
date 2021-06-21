@@ -42,7 +42,7 @@ class IcalCalendar extends Homey.App {
     actionsHandler(this)
 
     // get ical events
-    this.log('onInit: Triggering getEvents with reregistering of tokens')
+    this.log('onInit: Triggering getEvents and reregistering tokens')
     this.getEvents(true)
 
     // register callback when settings has been set
@@ -50,7 +50,7 @@ class IcalCalendar extends Homey.App {
       if (args && (args === this.variableMgmt.setting.icalUris || args === this.variableMgmt.setting.eventLimit || args === this.variableMgmt.setting.nextEventTokensPerCalendar)) {
         // sync calendars when calendar specific settings have been changed
         if (!this.isGettingEvents) {
-          this.log(`onInit/${args}: Triggering getEvents with reregistering of tokens`)
+          this.log(`onInit/${args}: Triggering getEvents and reregistering tokens`)
           this.getEvents(true)
         }
       } else if (args && (args === this.variableMgmt.setting.dateFormat || args === this.variableMgmt.setting.timeFormat)) {
